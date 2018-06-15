@@ -1,0 +1,104 @@
+---
+- name: M2 stack installation
+  hosts: localhost
+  tasks:
+  - name: brew install dependencies
+    homebrew:
+      name: wget,coreutils,nginx,mariadb,php@7.1,composer,openssl
+      state: present
+      update_homebrew: yes
+
+  - name: update zshrc
+    block:
+    - name: include zshrc note
+      lineinfile:
+        path: ~/.zshrc
+        state: present
+        insertafter: EOF
+        line: '# M2 stack configuration (added by Ansible)'
+    - name: add php bin to path
+      lineinfile:
+        path: ~/.zshrc
+        state: present
+        insertafter: EOF
+        line: 'export PATH="/usr/local/opt/php@7.1/bin:$PATH"'
+    - name: add php sbin to path
+      lineinfile:
+        path: ~/.zshrc
+        state: present
+        insertafter: EOF
+        line: 'export PATH="/usr/local/opt/php@7.1/sbin:$PATH"'
+    - name: add composer bin to path
+      lineinfile:
+        path: ~/.zshrc
+        state: present
+        insertafter: EOF
+        line: 'export PATH="$PATH:$HOME/.composer/vendor/bin"'
+    - name: add openssl bin to path
+      lineinfile:
+        path: ~/.zshrc
+        state: present
+        insertafter: EOF
+        line: 'export PATH="/usr/local/opt/openssl/bin:$PATH"'
+
+  - name: start services, and register to start on boot
+    block:
+    - name: start nginx
+      shell: 'brew services start nginx'
+      become: yes
+    - name: start mariadb
+      shell: 'brew services start mariadb'
+    - name: start php-fpm
+      shell: 'brew services start php@7.1'
+
+  - name: configure php-fpm for M2
+    block:
+      - name: copy php-fpm_m2.conf
+        copy:
+          src: m2_php-fpm.conf
+          dest: /usr/local/etc/php/7.1/php-fpm.d/m2.conf
+          owner: "{{ ansible_user_id  }}"
+          group: admin
+          mode: 0644
+      - name: install xdebug
+        pear:
+          name: pecl/xdebug
+          state: present
+      - name: remove xdebug zend_extension line stupidly added to top of php.ini by default
+        lineinfile:
+          path: /usr/local/etc/php/7.1/php.ini
+          state: absent
+          line: 'zend_extension="xdebug.so"'
+      - name: add a proper xdebug conf
+        copy:
+          src: ext-xdebug.ini
+          dest: /usr/local/etc/php/7.1/conf.d/ext-xdebug.ini
+          owner: "{{ ansible_user_id }}"
+          group: admin
+          mode: 0644
+      - name: restart php-fpm
+        shell: 'brew services restart php@7.1'
+
+  - name: configure nginx
+    block:
+      - name: check openssl cert is not already present
+        stat:
+          path: /usr/local/etc/openssl/certs/nginx-selfsigned.crt
+        register: cert
+      - name: check openssl key is not already present
+        stat:
+          path: /usr/local/etc/openssl/private/nginx-selfsigned.key
+        register: key
+      - name: generate self-signed SSL cert
+        shell: openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /usr/local/etc/openssl/private/nginx-selfsigned.key -out /usr/local/etc/openssl/certs/nginx-selfsigned.crt -subj "/C=US/ST=Denial/L=Springfield/O=Blah/CN=www.example.com"
+        when: not cert.stat.exists and not key.stat.exists
+      - name: copy nginx.conf
+        copy:
+          src: m2_nginx.conf
+          dest: /usr/local/etc/nginx/servers/m2.conf
+          owner: "{{ ansible_user_id }}"
+          group: admin
+          mode: 0644
+      - name: restart nginx
+        shell: brew services restart nginx
+        become: yes
